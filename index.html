@@ -63,6 +63,10 @@ details summary{cursor:pointer;color:var(--muted);font-size:14px}
 
   <div id="imgPane" class="hidden">
     <input type="file" id="file" accept="image/*">
+    <div class="row" style="grid-template-columns:1fr 1fr;margin-top:12px">
+      <button class="sec" id="rotate">Draai foto ↻</button>
+      <button class="sec" id="removeImg">Foto weghalen</button>
+    </div>
     <label>Helderheid</label>
     <input type="range" id="bright" min="-80" max="80" value="0">
     <label>Contrast</label>
@@ -74,6 +78,12 @@ details summary{cursor:pointer;color:var(--muted);font-size:14px}
 <div class="card">
   <label style="margin-top:0">Voorbeeld (zo wordt het geprint)</label>
   <canvas id="preview" width="384" height="100"></canvas>
+  <p class="hint">Tekst en foto komen samen op één sticker. Laat het tekstvak leeg voor alleen een foto.</p>
+  <label>Plaats van de tekst</label>
+  <select id="order">
+    <option value="below" selected>Tekst onder de foto</option>
+    <option value="above">Tekst boven de foto</option>
+  </select>
   <label>Witruimte na printen</label>
   <select id="feed">
     <option value="1">Weinig</option>
@@ -225,42 +235,64 @@ async function doPrint() {
 }
 
 // ---------- Voorbeeld tekenen ----------
+let rot = 0; // draaiing van de foto in graden
+function textPart() {
+  const txt = $('txt').value;
+  if (!txt.trim()) return null;
+  const c = document.createElement('canvas'), ctx = c.getContext('2d');
+  const size = +$('size').value;
+  const font = ($('bold').checked ? 'bold ' : '') + size + 'px -apple-system, system-ui, sans-serif';
+  ctx.font = font;
+  const lines = [];
+  for (const para of txt.split('\n')) {
+    let cur = '';
+    for (const w of para.split(' ')) {
+      const t = cur ? cur + ' ' + w : w;
+      if (ctx.measureText(t).width > W - 8 && cur) { lines.push(cur); cur = w; } else cur = t;
+    }
+    lines.push(cur);
+  }
+  const lh = Math.round(size * 1.2);
+  c.width = W; c.height = lines.length * lh + 8;
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, c.height);
+  ctx.font = font; ctx.fillStyle = '#000'; ctx.textBaseline = 'top'; ctx.textAlign = align;
+  const x = align === 'left' ? 4 : align === 'right' ? W - 4 : W / 2;
+  lines.forEach((l, i) => ctx.fillText(l, x, 4 + i * lh + size * 0.05));
+  threshold(ctx, c.height, false, 0, 0);
+  return c;
+}
+function imgPart() {
+  if (!img) return null;
+  const side = rot % 180 !== 0;
+  const iw = side ? img.height : img.width, ih = side ? img.width : img.height;
+  const h = Math.min(3000, Math.round(ih * W / iw));
+  const c = document.createElement('canvas'); c.width = W; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, h);
+  ctx.save(); ctx.translate(W / 2, h / 2); ctx.rotate(rot * Math.PI / 180);
+  const dw = side ? h : W, dh = side ? W : h;
+  ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh); ctx.restore();
+  threshold(ctx, h, $('dither').checked, +$('bright').value, +$('contrast').value);
+  return c;
+}
 function render() {
   const cv = $('preview'), ctx = cv.getContext('2d');
-  if (mode === 'text') {
-    const size = +$('size').value;
-    const font = ($('bold').checked ? 'bold ' : '') + size + 'px -apple-system, system-ui, sans-serif';
-    ctx.font = font;
-    const lines = [];
-    for (const para of $('txt').value.split('\n')) {
-      let cur = '';
-      for (const w of para.split(' ')) {
-        const t = cur ? cur + ' ' + w : w;
-        if (ctx.measureText(t).width > W - 8 && cur) { lines.push(cur); cur = w; } else cur = t;
-      }
-      lines.push(cur);
-    }
-    const lh = Math.round(size * 1.2);
-    cv.height = Math.max(20, lines.length * lh + 8);
-    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, cv.height);
-    ctx.font = font; ctx.fillStyle = '#000'; ctx.textBaseline = 'top'; ctx.textAlign = align;
-    const x = align === 'left' ? 4 : align === 'right' ? W - 4 : W / 2;
-    lines.forEach((l, i) => ctx.fillText(l, x, 4 + i * lh + size * 0.05));
-    threshold(ctx, cv.height, false);
-  } else {
-    if (!img) { cv.height = 60; ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, 60);
-      ctx.fillStyle = '#888'; ctx.font = '16px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('Kies eerst een foto', W / 2, 36); return; }
-    const h = Math.min(3000, Math.round(img.height * W / img.width));
-    cv.height = h;
-    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, h);
-    ctx.drawImage(img, 0, 0, W, h);
-    threshold(ctx, h, $('dither').checked);
+  const t = textPart(), i = imgPart();
+  const parts = ($('order').value === 'above' ? [t, i] : [i, t]).filter(Boolean);
+  if (!parts.length) {
+    cv.height = 60; ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, 60);
+    ctx.fillStyle = '#888'; ctx.font = '16px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('Typ tekst of kies een foto', W / 2, 36); return;
   }
+  const gap = parts.length > 1 ? 8 : 0;
+  cv.height = parts.reduce((s, c) => s + c.height, 0) + gap;
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, cv.height);
+  let y = 0;
+  for (const c of parts) { ctx.drawImage(c, 0, y); y += c.height + gap; }
 }
 
-function threshold(ctx, h, dither) {
+function threshold(ctx, h, dither, br, ct) {
   const d = ctx.getImageData(0, 0, W, h), p = d.data;
-  const br = mode === 'img' ? +$('bright').value : 0, ct = mode === 'img' ? +$('contrast').value : 0;
   const f = (259 * (ct + 255)) / (255 * (259 - ct));
   const g = new Float32Array(W * h);
   for (let i = 0; i < W * h; i++) {
@@ -286,7 +318,9 @@ $('connect').addEventListener('click', connect);
 $('print').addEventListener('click', doPrint);
 $('tabText').addEventListener('click', () => { mode = 'text'; $('tabText').classList.add('on'); $('tabImg').classList.remove('on'); $('textPane').classList.remove('hidden'); $('imgPane').classList.add('hidden'); render(); });
 $('tabImg').addEventListener('click', () => { mode = 'img'; $('tabImg').classList.add('on'); $('tabText').classList.remove('on'); $('imgPane').classList.remove('hidden'); $('textPane').classList.add('hidden'); render(); });
-['txt', 'size', 'bold', 'bright', 'contrast', 'dither'].forEach(id => $(id).addEventListener('input', () => { $('sizeVal').textContent = $('size').value; render(); }));
+$('rotate').addEventListener('click', () => { rot = (rot + 90) % 360; render(); });
+$('removeImg').addEventListener('click', () => { img = null; rot = 0; $('file').value = ''; render(); });
+['txt', 'size', 'bold', 'bright', 'contrast', 'dither', 'order'].forEach(id => ['input', 'change'].forEach(ev => $(id).addEventListener(ev, () => { $('sizeVal').textContent = $('size').value; render(); })));
 $('align').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   align = b.dataset.a; [...$('align').children].forEach(x => x.classList.toggle('on', x === b)); render();
@@ -294,7 +328,7 @@ $('align').addEventListener('click', e => {
 $('file').addEventListener('change', e => {
   const f = e.target.files[0]; if (!f) return;
   const r = new FileReader();
-  r.onload = () => { const im = new Image(); im.onload = () => { img = im; render(); }; im.src = r.result; };
+  r.onload = () => { const im = new Image(); im.onload = () => { img = im; rot = 0; render(); }; im.src = r.result; };
   r.readAsDataURL(f);
 });
 if (!navigator.bluetooth) setStatus('Let op: deze browser kan geen Bluetooth. Gebruik Bluefy (iPhone) of Chrome (Android/pc).', 'err');
