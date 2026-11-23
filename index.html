@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>T02 Stickerprinter</title>
+<style>
+:root{--bg:#f4f6f5;--card:#fff;--ink:#16201d;--muted:#5d6b66;--mint:#7fd6c4;--deep:#0f6b5c;--red:#c0392b}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 -apple-system,system-ui,Segoe UI,Roboto,sans-serif;padding:16px;padding-bottom:40px}
+main{max-width:520px;margin:0 auto;display:grid;gap:14px}
+h1{font-size:24px;margin:4px 0 0}
+.card{background:var(--card);border-radius:16px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+button{font:inherit;border:0;border-radius:12px;min-height:48px;padding:0 16px;cursor:pointer}
+.big{width:100%;font-size:18px;font-weight:700;background:var(--deep);color:#fff;min-height:56px}
+.big:disabled{opacity:.45}
+.sec{background:#e7efec;color:var(--ink)}
+#status{margin-top:10px;font-weight:600}
+.ok{color:var(--deep)}.err{color:var(--red)}
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+.tabs button{background:#e7efec}.tabs button.on{background:var(--mint);font-weight:700}
+textarea{width:100%;font:inherit;font-size:18px;border:1px solid #cfd8d5;border-radius:12px;padding:10px;min-height:90px}
+label{display:block;font-size:14px;color:var(--muted);margin:12px 0 4px}
+input[type=range]{width:100%}
+select{font:inherit;font-size:16px;width:100%;min-height:44px;border-radius:10px;border:1px solid #cfd8d5;background:#fff;padding:0 8px}
+.row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.row button.on{background:var(--mint);font-weight:700}
+#preview{width:100%;image-rendering:pixelated;background:#fff;border:1px dashed #b9c6c1;border-radius:8px;display:block}
+.hint{font-size:14px;color:var(--muted)}
+details summary{cursor:pointer;color:var(--muted);font-size:14px}
+#log{font:12px/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;max-height:220px;overflow:auto;background:#f0f3f2;padding:8px;border-radius:8px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<main>
+<h1>Stickerprinter T02</h1>
+
+<div class="card">
+  <button id="connect" class="big">Verbind printer</button>
+  <div id="status">Niet verbonden</div>
+  <p class="hint">Kies in de lijst het apparaat dat begint met <b>T02</b> of <b>Q</b>.</p>
+</div>
+
+<div class="card">
+  <div class="tabs">
+    <button id="tabText" class="on">Tekst</button>
+    <button id="tabImg">Foto / afbeelding</button>
+  </div>
+
+  <div id="textPane">
+    <textarea id="txt">Hallo!</textarea>
+    <label>Lettergrootte: <span id="sizeVal">60</span></label>
+    <input type="range" id="size" min="20" max="200" value="60">
+    <label>Uitlijning</label>
+    <div class="row" id="align">
+      <button class="sec" data-a="left">Links</button>
+      <button class="sec on" data-a="center">Midden</button>
+      <button class="sec" data-a="right">Rechts</button>
+    </div>
+    <label><input type="checkbox" id="bold" checked> Vet</label>
+  </div>
+
+  <div id="imgPane" class="hidden">
+    <input type="file" id="file" accept="image/*">
+    <label>Helderheid</label>
+    <input type="range" id="bright" min="-80" max="80" value="0">
+    <label>Contrast</label>
+    <input type="range" id="contrast" min="-50" max="100" value="20">
+    <label><input type="checkbox" id="dither" checked> Fotomodus (puntjes, beter voor foto's)</label>
+  </div>
+</div>
+
+<div class="card">
+  <label style="margin-top:0">Voorbeeld (zo wordt het geprint)</label>
+  <canvas id="preview" width="384" height="100"></canvas>
+  <label>Witruimte na printen</label>
+  <select id="feed">
+    <option value="1">Weinig</option>
+    <option value="2" selected>Normaal</option>
+    <option value="4">Veel</option>
+  </select>
+  <label>Verzendsnelheid</label>
+  <select id="speed">
+    <option value="normal" selected>Normaal</option>
+    <option value="safe">Veilig (trager, kies dit als de print mislukt of stopt)</option>
+  </select>
+  <div style="height:12px"></div>
+  <button id="print" class="big" disabled>Print</button>
+</div>
+
+<details class="card">
+  <summary>Technische info (voor als iets niet werkt)</summary>
+  <div id="log"></div>
+</details>
+</main>
+
+<script>
+{
+const W = 384; // printbreedte T02 in puntjes (48 mm)
+const $ = id => document.getElementById(id);
+const logEl = $('log');
+const log = m => { logEl.textContent += m + '\n'; logEl.scrollTop = 1e9; };
+const setStatus = (m, cls) => { $('status').textContent = m; $('status').className = cls || ''; };
+
+let device = null, chr = null, mode = 'text', align = 'center', img = null;
+
+// ---------- Bluetooth ----------
+const SERVICES = [0xff00, 0xaf30, 0xae30, 0xffe0, 0xfee7, 0x18f0,
+  '49535343-fe7d-4ae5-8fa9-9fafd205e455', 'e7810a71-73ae-499d-8c15-faa9aef0c3f2'];
+const PREFERRED = ['0000ff02', '0000af01', '0000ae01', '0000ffe1'];
+
+async function connect() {
+  if (!navigator.bluetooth) {
+    setStatus('Deze browser kan geen Bluetooth gebruiken. Open deze pagina in Bluefy (iPhone) of Chrome (Android/pc).', 'err');
+    return;
+  }
+  try {
+    setStatus('Printer zoeken…');
+    device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: SERVICES });
+    log('Gekozen: ' + (device.name || '(geen naam)'));
+    device.addEventListener('gattserverdisconnected', () => {
+      chr = null; $('print').disabled = true; setStatus('Verbinding verbroken. Druk opnieuw op Verbind printer.', 'err');
+    });
+    setStatus('Verbinden met ' + (device.name || 'printer') + '…');
+    const server = await device.gatt.connect();
+    let services = [];
+    try { services = await server.getPrimaryServices(); }
+    catch (e) {
+      for (const s of SERVICES) { try { services.push(await server.getPrimaryService(s)); } catch (_) {} }
+    }
+    const writable = [];
+    for (const s of services) {
+      log('Dienst: ' + s.uuid);
+      let cs = [];
+      try { cs = await s.getCharacteristics(); } catch (_) {}
+      for (const c of cs) {
+        const p = c.properties;
+        log('  kenmerk ' + c.uuid + (p.write ? ' write' : '') + (p.writeWithoutResponse ? ' writeNR' : '') + (p.notify ? ' notify' : ''));
+        if (p.write || p.writeWithoutResponse) writable.push(c);
+      }
+    }
+    chr = writable.find(c => PREFERRED.some(p => c.uuid.startsWith(p))) || writable[0];
+    if (!chr) throw new Error('Geen schrijfkanaal gevonden op dit apparaat. Koos je wel de printer?');
+    log('Gebruik kenmerk: ' + chr.uuid);
+    setStatus('Verbonden met ' + (device.name || 'printer') + ' ✓', 'ok');
+    $('print').disabled = false;
+  } catch (e) {
+    log('Fout: ' + e.message);
+    if (/cancel/i.test(e.message)) setStatus('Geannuleerd. Druk opnieuw op Verbind printer.');
+    else setStatus('Verbinden mislukt: ' + e.message, 'err');
+  }
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function send(bytes) {
+  const safe = $('speed').value === 'safe';
+  const size = safe ? 20 : 100, pause = safe ? 15 : 10;
+  const noResp = chr.properties.writeWithoutResponse;
+  for (let i = 0; i < bytes.length; i += size) {
+    const part = bytes.slice(i, i + size);
+    if (noResp && chr.writeValueWithoutResponse) await chr.writeValueWithoutResponse(part);
+    else if (chr.writeValueWithResponse) await chr.writeValueWithResponse(part);
+    else await chr.writeValue(part);
+    await sleep(pause);
+    if (i % 2000 === 0) setStatus('Printen… ' + Math.round(i / bytes.length * 100) + '%');
+  }
+}
+
+// ---------- Printcommando's (Phomemo T02 / M02) ----------
+function buildJob(canvas) {
+  const h = canvas.height, ctx = canvas.getContext('2d');
+  const px = ctx.getImageData(0, 0, W, h).data;
+  const bpr = W / 8, out = [];
+  out.push(0x1b, 0x40, 0x1b, 0x61, 0x01, 0x1f, 0x11, 0x02, 0x04);
+  for (let y0 = 0; y0 < h; y0 += 255) {
+    const lines = Math.min(255, h - y0);
+    out.push(0x1d, 0x76, 0x30, 0x00, bpr, 0x00, lines, 0x00);
+    for (let y = y0; y < y0 + lines; y++) {
+      for (let b = 0; b < bpr; b++) {
+        let v = 0;
+        for (let bit = 0; bit < 8; bit++) {
+          const i = (y * W + b * 8 + bit) * 4;
+          if (px[i] < 128) v |= 0x80 >> bit; // zwart puntje
+        }
+        out.push(v);
+      }
+    }
+  }
+  const feed = +$('feed').value;
+  out.push(0x1b, 0x64, feed, 0x1b, 0x64, feed, 0x1f, 0x11, 0x08, 0x1f, 0x11, 0x0e, 0x1f, 0x11, 0x07, 0x1f, 0x11, 0x09);
+  return new Uint8Array(out);
+}
+
+async function doPrint() {
+  if (!chr) return;
+  $('print').disabled = true;
+  try {
+    const job = buildJob($('preview'));
+    log('Versturen: ' + job.length + ' bytes');
+    await send(job);
+    setStatus('Klaar ✓', 'ok');
+  } catch (e) {
+    log('Printfout: ' + e.message);
+    setStatus('Printen mislukt: ' + e.message + '. Probeer Verzendsnelheid "Veilig".', 'err');
+  }
+  $('print').disabled = !chr;
+}
+
+// ---------- Voorbeeld tekenen ----------
+function render() {
+  const cv = $('preview'), ctx = cv.getContext('2d');
+  if (mode === 'text') {
+    const size = +$('size').value;
+    const font = ($('bold').checked ? 'bold ' : '') + size + 'px -apple-system, system-ui, sans-serif';
+    ctx.font = font;
+    const lines = [];
+    for (const para of $('txt').value.split('\n')) {
+      let cur = '';
+      for (const w of para.split(' ')) {
+        const t = cur ? cur + ' ' + w : w;
+        if (ctx.measureText(t).width > W - 8 && cur) { lines.push(cur); cur = w; } else cur = t;
+      }
+      lines.push(cur);
+    }
+    const lh = Math.round(size * 1.2);
+    cv.height = Math.max(20, lines.length * lh + 8);
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, cv.height);
+    ctx.font = font; ctx.fillStyle = '#000'; ctx.textBaseline = 'top'; ctx.textAlign = align;
+    const x = align === 'left' ? 4 : align === 'right' ? W - 4 : W / 2;
+    lines.forEach((l, i) => ctx.fillText(l, x, 4 + i * lh + size * 0.05));
+    threshold(ctx, cv.height, false);
+  } else {
+    if (!img) { cv.height = 60; ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, 60);
+      ctx.fillStyle = '#888'; ctx.font = '16px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('Kies eerst een foto', W / 2, 36); return; }
+    const h = Math.min(3000, Math.round(img.height * W / img.width));
+    cv.height = h;
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, h);
+    ctx.drawImage(img, 0, 0, W, h);
+    threshold(ctx, h, $('dither').checked);
+  }
+}
+
+function threshold(ctx, h, dither) {
+  const d = ctx.getImageData(0, 0, W, h), p = d.data;
+  const br = mode === 'img' ? +$('bright').value : 0, ct = mode === 'img' ? +$('contrast').value : 0;
+  const f = (259 * (ct + 255)) / (255 * (259 - ct));
+  const g = new Float32Array(W * h);
+  for (let i = 0; i < W * h; i++) {
+    let v = 0.299 * p[i*4] + 0.587 * p[i*4+1] + 0.114 * p[i*4+2];
+    if (p[i*4+3] < 128) v = 255;
+    g[i] = f * (v + br - 128) + 128;
+  }
+  for (let y = 0; y < h; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x, old = g[i], nv = old < 128 ? 0 : 255;
+    g[i] = nv;
+    if (dither) {
+      const e = old - nv;
+      if (x + 1 < W) g[i+1] += e * 7/16;
+      if (y + 1 < h) { if (x > 0) g[i+W-1] += e * 3/16; g[i+W] += e * 5/16; if (x + 1 < W) g[i+W+1] += e / 16; }
+    }
+  }
+  for (let i = 0; i < W * h; i++) { p[i*4] = p[i*4+1] = p[i*4+2] = g[i]; p[i*4+3] = 255; }
+  ctx.putImageData(d, 0, 0);
+}
+
+// ---------- Knoppen ----------
+$('connect').addEventListener('click', connect);
+$('print').addEventListener('click', doPrint);
+$('tabText').addEventListener('click', () => { mode = 'text'; $('tabText').classList.add('on'); $('tabImg').classList.remove('on'); $('textPane').classList.remove('hidden'); $('imgPane').classList.add('hidden'); render(); });
+$('tabImg').addEventListener('click', () => { mode = 'img'; $('tabImg').classList.add('on'); $('tabText').classList.remove('on'); $('imgPane').classList.remove('hidden'); $('textPane').classList.add('hidden'); render(); });
+['txt', 'size', 'bold', 'bright', 'contrast', 'dither'].forEach(id => $(id).addEventListener('input', () => { $('sizeVal').textContent = $('size').value; render(); }));
+$('align').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  align = b.dataset.a; [...$('align').children].forEach(x => x.classList.toggle('on', x === b)); render();
+});
+$('file').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { const im = new Image(); im.onload = () => { img = im; render(); }; im.src = r.result; };
+  r.readAsDataURL(f);
+});
+if (!navigator.bluetooth) setStatus('Let op: deze browser kan geen Bluetooth. Gebruik Bluefy (iPhone) of Chrome (Android/pc).', 'err');
+render();
+}
+</script>
+</body>
+</html>
