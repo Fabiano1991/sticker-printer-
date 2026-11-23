@@ -106,8 +106,11 @@ const setStatus = (m, cls) => { $('status').textContent = m; $('status').classNa
 let device = null, chr = null, mode = 'text', align = 'center', img = null;
 
 // ---------- Bluetooth ----------
-const SERVICES = [0xff00, 0xaf30, 0xae30, 0xffe0, 0xfee7, 0x18f0,
-  '49535343-fe7d-4ae5-8fa9-9fafd205e455', 'e7810a71-73ae-499d-8c15-faa9aef0c3f2'];
+const full = h => '0000' + h + '-0000-1000-8000-00805f9b34fb';
+const SERVICES = ['ff00', 'af30', 'ae30', 'ffe0', 'fee7', '18f0'].map(full)
+  .concat(['49535343-fe7d-4ae5-8fa9-9fafd205e455', 'e7810a71-73ae-499d-8c15-faa9aef0c3f2']);
+const errText = e => (e && (e.message || e.name)) || (typeof e === 'string' ? e : JSON.stringify(e)) || 'onbekende fout';
+let step = '';
 const PREFERRED = ['0000ff02', '0000af01', '0000ae01', '0000ffe1'];
 
 async function connect() {
@@ -117,13 +120,25 @@ async function connect() {
   }
   try {
     setStatus('Printer zoeken…');
-    device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: SERVICES });
+    step = 'printer kiezen';
+    try {
+      device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: SERVICES });
+    } catch (e1) {
+      log('Zoeken (alle apparaten) mislukt: ' + errText(e1));
+      if (/cancel/i.test(errText(e1))) throw e1;
+      step = 'printer kiezen (op naam)';
+      device = await navigator.bluetooth.requestDevice({
+        filters: ['T02', 'Q', 'Mr.in', 'M02', 'Phomemo'].map(n => ({ namePrefix: n })),
+        optionalServices: SERVICES });
+    }
     log('Gekozen: ' + (device.name || '(geen naam)'));
     device.addEventListener('gattserverdisconnected', () => {
       chr = null; $('print').disabled = true; setStatus('Verbinding verbroken. Druk opnieuw op Verbind printer.', 'err');
     });
     setStatus('Verbinden met ' + (device.name || 'printer') + '…');
+    step = 'verbinden';
     const server = await device.gatt.connect();
+    step = 'diensten lezen';
     let services = [];
     try { services = await server.getPrimaryServices(); }
     catch (e) {
@@ -146,9 +161,10 @@ async function connect() {
     setStatus('Verbonden met ' + (device.name || 'printer') + ' ✓', 'ok');
     $('print').disabled = false;
   } catch (e) {
-    log('Fout: ' + e.message);
-    if (/cancel/i.test(e.message)) setStatus('Geannuleerd. Druk opnieuw op Verbind printer.');
-    else setStatus('Verbinden mislukt: ' + e.message, 'err');
+    const t = errText(e);
+    log('Fout bij ' + step + ': ' + t);
+    if (/cancel/i.test(t)) setStatus('Geannuleerd. Druk opnieuw op Verbind printer.');
+    else setStatus('Verbinden mislukt bij "' + step + '": ' + t + '. Open "Technische info" onderaan.', 'err');
   }
 }
 
@@ -202,8 +218,8 @@ async function doPrint() {
     await send(job);
     setStatus('Klaar ✓', 'ok');
   } catch (e) {
-    log('Printfout: ' + e.message);
-    setStatus('Printen mislukt: ' + e.message + '. Probeer Verzendsnelheid "Veilig".', 'err');
+    log('Printfout: ' + errText(e));
+    setStatus('Printen mislukt: ' + errText(e) + '. Probeer Verzendsnelheid "Veilig".', 'err');
   }
   $('print').disabled = !chr;
 }
