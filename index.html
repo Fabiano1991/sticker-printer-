@@ -82,8 +82,8 @@ details summary{cursor:pointer;color:var(--muted);font-size:14px}
   </select>
   <label>Verzendsnelheid</label>
   <select id="speed">
-    <option value="normal" selected>Normaal</option>
-    <option value="safe">Veilig (trager, kies dit als de print mislukt of stopt)</option>
+    <option value="safe" selected>Veilig (aanbevolen)</option>
+    <option value="normal">Snel (alleen als Veilig goed werkt)</option>
   </select>
   <div style="height:12px"></div>
   <button id="print" class="big" disabled>Print</button>
@@ -172,7 +172,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function send(bytes) {
   const safe = $('speed').value === 'safe';
-  const size = safe ? 20 : 100, pause = safe ? 15 : 10;
+  const size = safe ? 20 : 100, pause = safe ? 8 : 10;
   const noResp = chr.properties.writeWithoutResponse;
   for (let i = 0; i < bytes.length; i += size) {
     const part = bytes.slice(i, i + size);
