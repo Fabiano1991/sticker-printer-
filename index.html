@@ -71,6 +71,7 @@ details summary{cursor:pointer;color:var(--muted);font-size:14px}
     <input type="range" id="bright" min="-80" max="80" value="0">
     <label>Contrast</label>
     <input type="range" id="contrast" min="-50" max="100" value="20">
+    <label><input type="checkbox" id="auto" checked> Automatisch verbeteren (lichter en scherper)</label>
     <label><input type="checkbox" id="dither" checked> Fotomodus (puntjes, beter voor foto's)</label>
   </div>
 </div>
@@ -272,7 +273,7 @@ function imgPart() {
   ctx.save(); ctx.translate(W / 2, h / 2); ctx.rotate(rot * Math.PI / 180);
   const dw = side ? h : W, dh = side ? W : h;
   ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh); ctx.restore();
-  threshold(ctx, h, $('dither').checked, +$('bright').value, +$('contrast').value);
+  threshold(ctx, h, $('dither').checked, +$('bright').value, +$('contrast').value, $('auto').checked);
   return c;
 }
 function render() {
@@ -291,15 +292,33 @@ function render() {
   for (const c of parts) { ctx.drawImage(c, 0, y); y += c.height + gap; }
 }
 
-function threshold(ctx, h, dither, br, ct) {
+function threshold(ctx, h, dither, br, ct, auto) {
   const d = ctx.getImageData(0, 0, W, h), p = d.data;
   const f = (259 * (ct + 255)) / (255 * (259 - ct));
   const g = new Float32Array(W * h);
   for (let i = 0; i < W * h; i++) {
     let v = 0.299 * p[i*4] + 0.587 * p[i*4+1] + 0.114 * p[i*4+2];
     if (p[i*4+3] < 128) v = 255;
-    g[i] = f * (v + br - 128) + 128;
+    g[i] = v;
   }
+  if (auto) {
+    // donkere foto's oprekken: donkerste 2% wordt zwart, lichtste 2% wit
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < W * h; i++) hist[Math.max(0, Math.min(255, g[i] | 0))]++;
+    let lo = 0, hi = 255, acc = 0;
+    const cut = W * h * 0.02;
+    while (lo < 254 && (acc += hist[lo]) < cut) lo++;
+    acc = 0; while (hi > lo + 1 && (acc += hist[hi]) < cut) hi--;
+    const span = Math.max(1, hi - lo);
+    for (let i = 0; i < W * h; i++) g[i] = Math.pow(Math.max(0, Math.min(1, (g[i] - lo) / span)), 0.8) * 255;
+    // lichte verscherping
+    const src = g.slice();
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < W - 1; x++) {
+      const i = y * W + x;
+      g[i] = src[i] * 2 - (src[i-1] + src[i+1] + src[i-W] + src[i+W]) / 4;
+    }
+  }
+  for (let i = 0; i < W * h; i++) g[i] = f * (g[i] + br - 128) + 128;
   for (let y = 0; y < h; y++) for (let x = 0; x < W; x++) {
     const i = y * W + x, old = g[i], nv = old < 128 ? 0 : 255;
     g[i] = nv;
@@ -320,7 +339,7 @@ $('tabText').addEventListener('click', () => { mode = 'text'; $('tabText').class
 $('tabImg').addEventListener('click', () => { mode = 'img'; $('tabImg').classList.add('on'); $('tabText').classList.remove('on'); $('imgPane').classList.remove('hidden'); $('textPane').classList.add('hidden'); render(); });
 $('rotate').addEventListener('click', () => { rot = (rot + 90) % 360; render(); });
 $('removeImg').addEventListener('click', () => { img = null; rot = 0; $('file').value = ''; render(); });
-['txt', 'size', 'bold', 'bright', 'contrast', 'dither', 'order'].forEach(id => ['input', 'change'].forEach(ev => $(id).addEventListener(ev, () => { $('sizeVal').textContent = $('size').value; render(); })));
+['txt', 'size', 'bold', 'bright', 'contrast', 'dither', 'auto', 'order'].forEach(id => ['input', 'change'].forEach(ev => $(id).addEventListener(ev, () => { $('sizeVal').textContent = $('size').value; render(); })));
 $('align').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   align = b.dataset.a; [...$('align').children].forEach(x => x.classList.toggle('on', x === b)); render();
